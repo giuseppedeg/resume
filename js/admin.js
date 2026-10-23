@@ -832,11 +832,16 @@ ${lines}                        </div>
     // then gets rejected as a 409 "someone else changed it" conflict even though
     // nothing really conflicts. Retry a couple of times with a fresh fetch before
     // surfacing this as a real conflict (e.g. two tabs genuinely editing at once).
+    // Resolves to the newly-published content string (not GitHub's API response) —
+    // callers that need to refresh a list right after saving should render from
+    // this directly instead of re-fetching, since a fetch right after a write can
+    // still return the old content for a moment (see withFreshFile's own comment).
     async function withFreshFile(fn, attempt = 1) {
         const { content, sha } = await Github.fetchFile(FILE_PATH);
         const { updated, message } = await fn(content);
         try {
-            return await Github.saveFile(FILE_PATH, updated, sha, message);
+            await Github.saveFile(FILE_PATH, updated, sha, message);
+            return updated;
         } catch (err) {
             if (err.isConflict && attempt < 3) {
                 await delay(500);
@@ -1009,10 +1014,9 @@ ${lines}                        </div>
             closeModal();
             setStatus(isNew ? 'Publishing new entry…' : 'Publishing edit…', 'loading');
             try {
-                if (isNew) await saveEntryAdd(sectionId, newData);
-                else await saveEntryEdit(sectionId, index, newData);
+                const updated = isNew ? await saveEntryAdd(sectionId, newData) : await saveEntryEdit(sectionId, index, newData);
                 setStatus('Published. The site will update in about 30–60 seconds.', 'success');
-                await renderSectionList(sectionId);
+                await renderSectionList(sectionId, updated);
             } catch (err) {
                 setStatus(err.message, 'error');
             }
@@ -1136,7 +1140,10 @@ ${lines}                        </div>
         }
     }
 
-    async function renderSectionList(sectionId) {
+    // `preloadedContent`, when given, is rendered from directly instead of fetching —
+    // used right after a save, where the content we just wrote is already known and
+    // more trustworthy than a fetch (which can briefly still return the old version).
+    async function renderSectionList(sectionId, preloadedContent) {
         const section = SECTIONS[sectionId];
         let extraBtn = '';
         if (sectionId === 'pubs') extraBtn = '<button class="btn btn-outline-primary btn-cv" id="pubsSyncBtn">Sync publications</button>';
@@ -1156,7 +1163,7 @@ ${lines}                        </div>
         if (sectionId === 'confs') $('coverageCheckBtn').addEventListener('click', handleConfsCoverageCheck);
 
         try {
-            const { content } = await Github.fetchFile(FILE_PATH);
+            const content = preloadedContent !== undefined ? preloadedContent : (await Github.fetchFile(FILE_PATH)).content;
             const masked = maskComments(content);
             const blocks = listEntryBlocks(masked, sectionId);
             const entries = blocks.map((b) => section.parse(content.slice(b.start, b.end)));
@@ -1191,9 +1198,9 @@ ${lines}                        </div>
                         if (!confirm(`Permanently delete "${entries[i].title}"?`)) return;
                         setStatus('Publishing deletion…', 'loading');
                         try {
-                            await saveEntryDelete(sectionId, i, entries[i].title);
+                            const updated = await saveEntryDelete(sectionId, i, entries[i].title);
                             setStatus('Published. The site will update in about 30–60 seconds.', 'success');
-                            await renderSectionList(sectionId);
+                            await renderSectionList(sectionId, updated);
                         } catch (err) {
                             setStatus(err.message, 'error');
                         }
@@ -1202,9 +1209,9 @@ ${lines}                        </div>
                     if (action === 'up' || action === 'down') {
                         setStatus('Publishing new order…', 'loading');
                         try {
-                            await saveEntryMove(sectionId, i, action === 'up' ? 'up' : 'down');
+                            const updated = await saveEntryMove(sectionId, i, action === 'up' ? 'up' : 'down');
                             setStatus('Published. The site will update in about 30–60 seconds.', 'success');
-                            await renderSectionList(sectionId);
+                            await renderSectionList(sectionId, updated);
                         } catch (err) {
                             setStatus(err.message, 'error');
                         }
@@ -1449,9 +1456,9 @@ ${lines}                        </div>
             closeModal();
             setStatus('Publishing…', 'loading');
             try {
-                await saveSkillEdit(index, bullet);
+                const updated = await saveSkillEdit(index, bullet);
                 setStatus('Published. The site will update in about 30–60 seconds.', 'success');
-                await renderSkillsTab();
+                await renderSkillsTab(updated);
             } catch (err) {
                 setStatus(err.message, 'error');
             }
@@ -1459,13 +1466,13 @@ ${lines}                        </div>
         els.modal.hidden = false;
     }
 
-    async function renderSkillsTab() {
+    async function renderSkillsTab(preloadedContent) {
         els.content.innerHTML = `<div class="admin-section-header"><h2>Skills</h2><button class="btn btn-primary btn-cv" id="addSkillBtn">+ New entry</button></div>
         <div id="skillsList" class="admin-entry-list"><p class="admin-muted">Loading…</p></div>
         <p class="admin-muted admin-note">The "Programming Languages &amp; Tools" icon row is not managed by this editor.</p>`;
         $('addSkillBtn').addEventListener('click', () => openSkillForm(null, null));
         try {
-            const { content } = await Github.fetchFile(FILE_PATH);
+            const content = preloadedContent !== undefined ? preloadedContent : (await Github.fetchFile(FILE_PATH)).content;
             const bullets = parseSkillsBullets(content);
             const list = $('skillsList');
             list.innerHTML = bullets.map((b, i) => `
@@ -1483,9 +1490,9 @@ ${lines}                        </div>
                     if (!confirm(`Delete "${bullets[i].label}"?`)) return;
                     setStatus('Publishing deletion…', 'loading');
                     try {
-                        await saveSkillDelete(i);
+                        const updated = await saveSkillDelete(i);
                         setStatus('Published. The site will update in about 30–60 seconds.', 'success');
-                        await renderSkillsTab();
+                        await renderSkillsTab(updated);
                     } catch (err) {
                         setStatus(err.message, 'error');
                     }
