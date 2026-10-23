@@ -276,7 +276,7 @@
     }
 
     async function syncPublicationSources() {
-        const { content } = await Github.fetchFile(FILE_PATH);
+        const { content } = await loadFile();
         const masked = maskComments(content);
         const blocks = listEntryBlocks(masked, 'pubs');
         const siteEntries = blocks.map((b, i) => ({ index: i, ...parsePublicationBlock(content.slice(b.start, b.end)) }));
@@ -360,7 +360,7 @@
     }
 
     async function findPublicationsWithoutConfEntry() {
-        const { content } = await Github.fetchFile(FILE_PATH);
+        const { content } = await loadFile();
         const masked = maskComments(content);
         const pubs = listEntryBlocks(masked, 'pubs').map((b) => parsePublicationBlock(content.slice(b.start, b.end)));
         const confs = listEntryBlocks(masked, 'confs').map((b) => parseConfsBlock(content.slice(b.start, b.end)));
@@ -827,26 +827,42 @@ ${lines}                        </div>
         return new Promise((resolve) => setTimeout(resolve, ms));
     }
 
-    // GitHub's read path can lag a moment behind a write that just completed —
-    // fetching right after a previous save can still return the old sha, which
-    // then gets rejected as a 409 "someone else changed it" conflict even though
-    // nothing really conflicts. Retry a couple of times with a fresh fetch before
-    // surfacing this as a real conflict (e.g. two tabs genuinely editing at once).
+    // GitHub's read path can lag a moment behind a write that just completed, so a
+    // fetch done right after a save can still return the pre-save content/sha. For a
+    // single-operator tool like this, our own last successful write is a far more
+    // reliable source of truth than a fresh GET — so we cache it and keep reusing it
+    // across consecutive actions (e.g. delete, then immediately reorder) instead of
+    // re-fetching each time. The cache is only dropped on an actual conflict (the file
+    // really did change under us — someone editing it by hand, say), which forces a
+    // real re-fetch before retrying.
+    let fileCache = null;
+
+    async function loadFile() {
+        if (fileCache) return fileCache;
+        const { content, sha } = await Github.fetchFile(FILE_PATH);
+        fileCache = { content, sha };
+        return fileCache;
+    }
+
     // Resolves to the newly-published content string (not GitHub's API response) —
     // callers that need to refresh a list right after saving should render from
     // this directly instead of re-fetching, since a fetch right after a write can
-    // still return the old content for a moment (see withFreshFile's own comment).
+    // still return the old content for a moment (see loadFile's own comment).
     async function withFreshFile(fn, attempt = 1) {
-        const { content, sha } = await Github.fetchFile(FILE_PATH);
+        const { content, sha } = await loadFile();
         const { updated, message } = await fn(content);
         try {
-            await Github.saveFile(FILE_PATH, updated, sha, message);
+            const result = await Github.saveFile(FILE_PATH, updated, sha, message);
+            const newSha = result && result.content && result.content.sha;
+            fileCache = newSha ? { content: updated, sha: newSha } : null;
             return updated;
         } catch (err) {
             if (err.isConflict && attempt < 3) {
+                fileCache = null;
                 await delay(500);
                 return withFreshFile(fn, attempt + 1);
             }
+            fileCache = null;
             throw err;
         }
     }
@@ -1163,7 +1179,7 @@ ${lines}                        </div>
         if (sectionId === 'confs') $('coverageCheckBtn').addEventListener('click', handleConfsCoverageCheck);
 
         try {
-            const content = preloadedContent !== undefined ? preloadedContent : (await Github.fetchFile(FILE_PATH)).content;
+            const content = preloadedContent !== undefined ? preloadedContent : (await loadFile()).content;
             const masked = maskComments(content);
             const blocks = listEntryBlocks(masked, sectionId);
             const entries = blocks.map((b) => section.parse(content.slice(b.start, b.end)));
@@ -1327,7 +1343,7 @@ ${lines}                        </div>
     async function renderAboutTab() {
         els.content.innerHTML = '<div class="admin-section-header"><h2>About</h2></div><div id="aboutFormWrap"><p class="admin-muted">Loading…</p></div>';
         try {
-            const { content } = await Github.fetchFile(FILE_PATH);
+            const { content } = await loadFile();
             const data = parseAbout(content);
             const wrap = $('aboutFormWrap');
             wrap.innerHTML = `<div class="admin-field admin-photo-field">
@@ -1472,7 +1488,7 @@ ${lines}                        </div>
         <p class="admin-muted admin-note">The "Programming Languages &amp; Tools" icon row is not managed by this editor.</p>`;
         $('addSkillBtn').addEventListener('click', () => openSkillForm(null, null));
         try {
-            const content = preloadedContent !== undefined ? preloadedContent : (await Github.fetchFile(FILE_PATH)).content;
+            const content = preloadedContent !== undefined ? preloadedContent : (await loadFile()).content;
             const bullets = parseSkillsBullets(content);
             const list = $('skillsList');
             list.innerHTML = bullets.map((b, i) => `
@@ -1551,6 +1567,7 @@ ${lines}                        </div>
     function handleLogout() {
         sessionStorage.removeItem(TOKEN_KEY);
         Github.token = null;
+        fileCache = null;
         els.editorScreen.hidden = true;
         els.loginScreen.hidden = false;
         els.tokenInput.value = '';
