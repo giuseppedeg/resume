@@ -1,0 +1,11 @@
+{
+  "name": "resume-automation",
+  "private": true,
+  "description": "Support tooling for the resume site (not used to build/serve the site itself, which stays plain static HTML).",
+  "scripts": {
+    "sync-publications": "node .github/scripts/sync-publications.js"
+  },
+  "dependencies": {
+    "jsdom": "^24.1.3"
+  }
+}
