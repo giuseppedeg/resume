@@ -110,7 +110,11 @@
             });
             if (!res.ok) {
                 const body = await res.json().catch(() => ({}));
-                if (res.status === 409) throw new Error('The file changed since you last loaded it. Reload and try again.');
+                if (res.status === 409) {
+                    const err = new Error('The file changed since you last loaded it. Reload and try again.');
+                    err.isConflict = true;
+                    throw err;
+                }
                 throw new Error(body.message || `GitHub error (${res.status}).`);
             }
             return res.json();
@@ -819,10 +823,27 @@ ${lines}                        </div>
     // commits in one request. No separate "publish batch" step.
     // -----------------------------------------------------------------
 
-    async function withFreshFile(fn) {
+    function delay(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    // GitHub's read path can lag a moment behind a write that just completed —
+    // fetching right after a previous save can still return the old sha, which
+    // then gets rejected as a 409 "someone else changed it" conflict even though
+    // nothing really conflicts. Retry a couple of times with a fresh fetch before
+    // surfacing this as a real conflict (e.g. two tabs genuinely editing at once).
+    async function withFreshFile(fn, attempt = 1) {
         const { content, sha } = await Github.fetchFile(FILE_PATH);
         const { updated, message } = await fn(content);
-        return Github.saveFile(FILE_PATH, updated, sha, message);
+        try {
+            return await Github.saveFile(FILE_PATH, updated, sha, message);
+        } catch (err) {
+            if (err.isConflict && attempt < 3) {
+                await delay(500);
+                return withFreshFile(fn, attempt + 1);
+            }
+            throw err;
+        }
     }
 
     function saveEntryEdit(sectionId, index, data) {
