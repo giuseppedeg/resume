@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+        <meta name="robots" content="noindex, nofollow" />
+        <title>Resume Admin</title>
+        <link rel="icon" type="image/x-icon" href="assets/img/favicon.ico" />
+        <link href="https://fonts.googleapis.com/css?family=Muli:400,400i,800,800i" rel="stylesheet" type="text/css" />
+        <link href="css/styles.css" rel="stylesheet" />
+        <link href="css/admin.css" rel="stylesheet" />
+    </head>
+    <body>
+        <div id="loginScreen" class="admin-login">
+            <div class="admin-login-card">
+                <h1>Resume Admin</h1>
+                <p>
+                    Paste a <strong>GitHub Personal Access Token</strong> here (ideally "fine-grained",
+                    created at <code>github.com/settings/personal-access-tokens/new</code>, limited to the
+                    <code>giuseppedeg/resume</code> repository only, with <code>Contents: Read and write</code>
+                    permission). The token stays only in this browser (it's cleared when you close the tab)
+                    and is never sent anywhere except <code>api.github.com</code>.
+                </p>
+                <div class="admin-field">
+                    <label for="tokenInput">Personal Access Token</label>
+                    <input type="password" id="tokenInput" placeholder="github_pat_..." autocomplete="off" />
+                </div>
+                <button id="connectBtn" class="btn btn-primary btn-cv">Connect</button>
+                <div id="loginError" class="admin-error" hidden></div>
+            </div>
+        </div>
+
+        <div id="editorScreen" hidden>
+            <header class="admin-header">
+                <span class="admin-header-title">Resume Admin</span>
+                <a href="index.html" target="_blank" class="admin-header-link">View site &rarr;</a>
+                <button id="logoutBtn" class="btn btn-outline-primary btn-cv admin-logout">Log out</button>
+            </header>
+            <nav id="adminTabs" class="admin-tabs"></nav>
+            <div id="adminStatus" class="admin-status" hidden></div>
+            <main id="adminContent" class="admin-content"></main>
+        </div>
+
+        <div id="entryModal" class="admin-modal" hidden>
+            <div class="admin-modal-backdrop"></div>
+            <div class="admin-modal-dialog">
+                <div class="admin-modal-header">
+                    <h3 id="entryModalTitle"></h3>
+                    <button id="closeModalBtn" class="admin-icon-btn" aria-label="Close">&times;</button>
+                </div>
+                <div id="entryModalBody" class="admin-modal-body"></div>
+            </div>
+        </div>
+
+        <script src="js/admin.js"></script>
+    </body>
+</html>
