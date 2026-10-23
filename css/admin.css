@@ -351,3 +351,28 @@ body {
     display: block;
     margin-bottom: 0.4rem;
 }
+
+.admin-bibtex-import {
+    background: #f4f6f8;
+    border: 1px solid #e0e4e8;
+    border-radius: 0.4rem;
+    padding: 1rem;
+    margin-bottom: 1.25rem;
+}
+.admin-bibtex-import .admin-field {
+    margin-bottom: 0.75rem;
+}
+.admin-bibtex-import textarea {
+    font-family: monospace;
+    font-size: 0.85rem;
+}
+.admin-bibtex-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+.admin-bibtex-actions .admin-error {
+    margin: 0;
+    flex: 1 1 auto;
+}

@@ -647,6 +647,146 @@ ${lines}                        </div>
     }
 
     // -----------------------------------------------------------------
+    // BibTeX import (Publications "New entry" form only) — a convenience for
+    // pre-filling the form from a pasted BibTeX entry. The result is always
+    // just a draft left in the normal, editable form fields: nothing is
+    // saved until the admin reviews it and explicitly submits, same as the
+    // ORCID/Semantic Scholar sync suggestions above.
+    // -----------------------------------------------------------------
+
+    const LATEX_ACCENT_MARKS = {
+        "'": '́', '`': '̀', '"': '̈', '^': '̂', '~': '̃',
+        '=': '̄', '.': '̇', v: '̌', u: '̆', H: '̋',
+    };
+    const LATEX_SYMBOLS = { ss: 'ß', o: 'ø', O: 'Ø', ae: 'æ', AE: 'Æ', l: 'ł', L: 'Ł' };
+
+    function decodeLatexAccents(str) {
+        if (!str) return str;
+        let out = str;
+        out = out.replace(/\\([`'^"~=.]|[vuH])\{([a-zA-Z])\}/g, (_, cmd, letter) => (letter + (LATEX_ACCENT_MARKS[cmd] || '')).normalize('NFC'));
+        out = out.replace(/\\([`'^"~=.]|[vuH])([a-zA-Z])/g, (_, cmd, letter) => (letter + (LATEX_ACCENT_MARKS[cmd] || '')).normalize('NFC'));
+        out = out.replace(/\\c\{([a-zA-Z])\}/g, (_, letter) => (letter + '̧').normalize('NFC'));
+        out = out.replace(/\\(ss|o|O|ae|AE|l|L)(?![a-zA-Z])/g, (_, cmd) => LATEX_SYMBOLS[cmd] || cmd);
+        out = out.replace(/--/g, '–').replace(/~/g, ' ');
+        return out;
+    }
+
+    function cleanBibtexValue(v) {
+        return decodeLatexAccents(v || '').replace(/[{}]/g, '').replace(/\s+/g, ' ').trim();
+    }
+
+    function findMatchingBrace(text, openIdx) {
+        let depth = 0;
+        for (let i = openIdx; i < text.length; i += 1) {
+            if (text[i] === '{') depth += 1;
+            else if (text[i] === '}') {
+                depth -= 1;
+                if (depth === 0) return i;
+            }
+        }
+        return -1;
+    }
+
+    function parseBibtexFieldBody(body) {
+        const fields = {};
+        let i = 0;
+        while (i < body.length) {
+            while (i < body.length && /[\s,]/.test(body[i])) i += 1;
+            if (i >= body.length) break;
+            const keyMatch = /^[A-Za-z][A-Za-z0-9_-]*/.exec(body.slice(i));
+            if (!keyMatch) break;
+            const key = keyMatch[0].toLowerCase();
+            i += keyMatch[0].length;
+            while (i < body.length && /\s/.test(body[i])) i += 1;
+            if (body[i] !== '=') break;
+            i += 1;
+            while (i < body.length && /\s/.test(body[i])) i += 1;
+            let value = '';
+            if (body[i] === '{') {
+                const close = findMatchingBrace(body, i);
+                if (close === -1) break;
+                value = body.slice(i + 1, close);
+                i = close + 1;
+            } else if (body[i] === '"') {
+                let j = i + 1;
+                while (j < body.length && body[j] !== '"') j += 1;
+                value = body.slice(i + 1, j);
+                i = j + 1;
+            } else {
+                let j = i;
+                while (j < body.length && body[j] !== ',' && body[j] !== '\n') j += 1;
+                value = body.slice(i, j).trim();
+                i = j;
+            }
+            fields[key] = cleanBibtexValue(value);
+        }
+        return fields;
+    }
+
+    function parseBibtexEntry(text) {
+        const m = /@\s*([A-Za-z]+)\s*\{/.exec(text || '');
+        if (!m) throw new Error('No BibTeX entry found (expected something like "@inproceedings{...").');
+        const type = m[1].toLowerCase();
+        const braceStart = text.indexOf('{', m.index);
+        const braceEnd = findMatchingBrace(text, braceStart);
+        if (braceEnd === -1) throw new Error('Unbalanced braces in the BibTeX entry.');
+        const inner = text.slice(braceStart + 1, braceEnd);
+        const commaIdx = inner.indexOf(',');
+        const fields = parseBibtexFieldBody(commaIdx === -1 ? '' : inner.slice(commaIdx + 1));
+        return { type, fields };
+    }
+
+    const BIBTEX_TYPE_TO_KICKER = {
+        article: 'Journal Article',
+        inproceedings: 'Conference Proceedings',
+        conference: 'Conference Proceedings',
+        incollection: 'Book Chapter',
+        inbook: 'Book Chapter',
+        book: 'Book',
+        phdthesis: 'PhD Thesis',
+        mastersthesis: "Master's Thesis",
+        techreport: 'Technical Report',
+    };
+
+    // Renders as "Last, F." (matching the site's existing citation style), bolding
+    // whichever author is Giuseppe himself — also matching existing entries, which
+    // all bold his own name in the author list.
+    function formatBibtexAuthor(name) {
+        const cleaned = cleanBibtexValue(name);
+        let last;
+        let first;
+        if (cleaned.includes(',')) {
+            [last, first] = cleaned.split(',').map((s) => s.trim());
+        } else {
+            const parts = cleaned.split(/\s+/);
+            last = parts.pop();
+            first = parts.join(' ');
+        }
+        const initial = first ? `${first.trim()[0]}.` : '';
+        const formatted = initial ? `${last}, ${initial}` : last;
+        const isSelf = last.toLowerCase().replace(/[^a-z]/g, '').includes('degregorio');
+        return isSelf ? `<strong>${formatted}</strong>` : formatted;
+    }
+
+    function bibtexToPublicationFields(text) {
+        const { type, fields } = parseBibtexEntry(text);
+        if (!fields.title) throw new Error('This BibTeX entry has no "title" field.');
+
+        const venue = fields.journal || fields.booktitle || fields.publisher || fields.organization || fields.school || '';
+        const doi = fields.doi ? fields.doi.replace(/^https?:\/\/(dx\.)?doi\.org\//i, '') : '';
+        const isArxiv = fields.eprint && /arxiv/i.test(fields.archiveprefix || '');
+        const link = doi ? `https://doi.org/${doi}` : fields.url ? fields.url : isArxiv ? `https://arxiv.org/abs/${fields.eprint}` : '';
+        const kicker = BIBTEX_TYPE_TO_KICKER[type] || (isArxiv ? 'Preprint' : '');
+
+        const authors = (fields.author || '').split(/\s+and\s+/i).filter(Boolean).map(formatBibtexAuthor);
+        const authorsStr = authors.join(', ');
+        const authorsSep = authorsStr.replace(/<\/strong>$/, '').endsWith('.') ? '' : '.';
+        const citation = authorsStr ? `${authorsStr}${authorsSep} ${fields.title}${venue ? `. In: *${venue}*` : ''}.` : '';
+
+        return { kicker, title: fields.title, link, subheading: venue, date: fields.year || '', citation };
+    }
+
+    // -----------------------------------------------------------------
     // Section registry
     // -----------------------------------------------------------------
 
@@ -1014,14 +1154,45 @@ ${lines}                        </div>
         const section = SECTIONS[sectionId];
         const isNew = index === null;
         const data = existingData || {};
+        const showBibtexImport = isNew && sectionId === 'pubs';
         els.modalTitle.textContent = `${section.label} — ${isNew ? 'New entry' : 'Edit entry'}`;
-        els.modalBody.innerHTML = `<form id="entryForm">${section.fields.map((f) => fieldInputHtml(f, data[f.key])).join('')}
+        const bibtexHtml = showBibtexImport ? `<div class="admin-bibtex-import">
+            <div class="admin-field">
+                <label>Import from BibTeX (optional)</label>
+                <textarea id="bibtexInput" rows="6" placeholder="@inproceedings{key2026,&#10;  title = {...},&#10;  author = {Last, First and Last2, First2},&#10;  ...&#10;}"></textarea>
+            </div>
+            <div class="admin-bibtex-actions">
+                <button type="button" class="btn btn-outline-primary btn-cv" id="bibtexParseBtn">Fill form from BibTeX</button>
+                <span id="bibtexError" class="admin-error" hidden></span>
+            </div>
+        </div>` : '';
+        els.modalBody.innerHTML = `${bibtexHtml}<form id="entryForm">${section.fields.map((f) => fieldInputHtml(f, data[f.key])).join('')}
             <div class="admin-form-actions">
                 <button type="submit" class="btn btn-primary btn-cv">Save and publish</button>
                 <button type="button" class="btn btn-outline-primary btn-cv" id="cancelFormBtn">Cancel</button>
             </div>
         </form>`;
         $('cancelFormBtn').addEventListener('click', closeModal);
+        if (showBibtexImport) {
+            $('bibtexParseBtn').addEventListener('click', () => {
+                const errEl = $('bibtexError');
+                errEl.hidden = true;
+                try {
+                    const mapped = bibtexToPublicationFields($('bibtexInput').value);
+                    const form = $('entryForm');
+                    section.fields.forEach((f) => {
+                        if (!(f.key in mapped)) return;
+                        const el = form.querySelector(`[name="${f.key}"]`);
+                        if (!el) return;
+                        if (f.type === 'checkbox') el.checked = !!mapped[f.key];
+                        else el.value = mapped[f.key];
+                    });
+                } catch (err) {
+                    errEl.textContent = err.message;
+                    errEl.hidden = false;
+                }
+            });
+        }
         $('entryForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             const form = e.target;
