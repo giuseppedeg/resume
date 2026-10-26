@@ -1240,6 +1240,13 @@ ${lines}                        </div>
         els.modalBody.innerHTML = '';
     }
 
+    // One button, all sources: ORCID and Semantic Scholar are checked instantly
+    // (browser-callable, no key needed) with results reviewable right here, same
+    // as before. Google Scholar can't be — a scraping API key can't safely live
+    // in this public, client-side code — so it's checked by starting the existing
+    // scheduled workflow in the background (server-side, key as a repo secret);
+    // if that finds anything, it opens a pull request instead of showing up in
+    // this panel. Both run in parallel off the one click.
     async function handlePublicationsSync() {
         const btn = $('pubsSyncBtn');
         const panel = $('pubsSyncPanel');
@@ -1247,7 +1254,17 @@ ${lines}                        </div>
         btn.textContent = 'Syncing…';
         panel.innerHTML = '';
         try {
-            const { newOnes, linkSuggestions, sources, failures, totalSite } = await syncPublicationSources();
+            const [syncResult, scholarResult] = await Promise.allSettled([
+                syncPublicationSources(),
+                Github.dispatchWorkflow(SYNC_WORKFLOW_FILE),
+            ]);
+            if (syncResult.status === 'rejected') throw syncResult.reason;
+            const { newOnes, linkSuggestions, sources, failures, totalSite } = syncResult.value;
+
+            const prsUrl = `https://github.com/${OWNER}/${REPO}/pulls`;
+            const scholarLine = scholarResult.status === 'fulfilled'
+                ? `<p class="admin-muted">Also started a Google Scholar check in the background (takes about a minute) — if it finds anything, it opens a <a href="${escapeAttr(prsUrl)}" target="_blank">pull request</a> to review.</p>`
+                : `<p class="admin-error">Could not start the Google Scholar check: ${escapeHtml(scholarResult.reason.message)}</p>`;
 
             const checkedLine = sources.length
                 ? `Checked ${sources.map((s) => `${s.name} (${s.total})`).join(' and ')} against ${totalSite} publications on the site.`
@@ -1255,7 +1272,7 @@ ${lines}                        </div>
             const failureLines = failures.map((f) => `<p class="admin-error">${escapeHtml(f.name)}: ${escapeHtml(f.message)}</p>`).join('');
 
             if (!newOnes.length && !linkSuggestions.length) {
-                panel.innerHTML = `<p class="admin-muted">${checkedLine} Nothing new to review.</p>${failureLines}`;
+                panel.innerHTML = `<p class="admin-muted">${checkedLine} Nothing new to review.</p>${failureLines}${scholarLine}`;
             } else {
                 const newHtml = newOnes.map((w, i) => `
                     <div class="admin-entry-row">
@@ -1283,6 +1300,7 @@ ${lines}                        </div>
                     ${newOnes.length ? `<h4 class="admin-subhead">New, not on the site (${newOnes.length})</h4><div class="admin-entry-list">${newHtml}</div>` : ''}
                     ${linkSuggestions.length ? `<h4 class="admin-subhead">On the site with no link (${linkSuggestions.length})</h4><div class="admin-entry-list">${linkHtml}</div>` : ''}
                     <p class="admin-note admin-muted">ORCID/Semantic Scholar data is often less complete than what's already on the site, so nothing here publishes automatically — each button opens the normal form, pre-filled, for you to check before saving.</p>
+                    ${scholarLine}
                 `;
                 panel.querySelectorAll('[data-pubsync-add]').forEach((b) => {
                     b.addEventListener('click', () => {
@@ -1305,29 +1323,6 @@ ${lines}                        </div>
         } finally {
             btn.disabled = false;
             btn.textContent = 'Sync publications';
-        }
-    }
-
-    // Google Scholar itself can't be checked from here — a scraping API key can't
-    // safely live in this public, client-side code. Instead this starts the
-    // existing scheduled workflow (which runs server-side, with the key as a
-    // repo secret) and points to the Pull Requests tab — same "never publishes
-    // without review" guarantee as the inline sync above, just not instant.
-    async function handleGoogleScholarCheck() {
-        const btn = $('scholarCheckBtn');
-        const panel = $('scholarCheckPanel');
-        btn.disabled = true;
-        btn.textContent = 'Starting…';
-        panel.innerHTML = '';
-        try {
-            await Github.dispatchWorkflow(SYNC_WORKFLOW_FILE);
-            const prsUrl = `https://github.com/${OWNER}/${REPO}/pulls`;
-            panel.innerHTML = `<p class="admin-muted">Started. This checks ORCID, Semantic Scholar and Google Scholar together and takes about a minute — if it finds anything new, it opens a pull request for you to review: <a href="${escapeAttr(prsUrl)}" target="_blank">${escapeHtml(prsUrl)}</a></p>`;
-        } catch (err) {
-            panel.innerHTML = `<p class="admin-error">${escapeHtml(err.message)}</p>`;
-        } finally {
-            btn.disabled = false;
-            btn.textContent = 'Check Google Scholar';
         }
     }
 
@@ -1380,10 +1375,7 @@ ${lines}                        </div>
     async function renderSectionList(sectionId, preloadedContent) {
         const section = SECTIONS[sectionId];
         let extraBtn = '';
-        if (sectionId === 'pubs') {
-            extraBtn = '<button class="btn btn-outline-primary btn-cv" id="pubsSyncBtn">Sync publications</button>'
-                + '<button class="btn btn-outline-primary btn-cv" id="scholarCheckBtn">Check Google Scholar</button>';
-        }
+        if (sectionId === 'pubs') extraBtn = '<button class="btn btn-outline-primary btn-cv" id="pubsSyncBtn">Sync publications</button>';
         if (sectionId === 'confs') extraBtn = '<button class="btn btn-outline-primary btn-cv" id="coverageCheckBtn">Check publications without a conference entry</button>';
         els.content.innerHTML = `<div class="admin-section-header">
             <h2>${section.label}</h2>
@@ -1392,12 +1384,11 @@ ${lines}                        </div>
                 <button class="btn btn-primary btn-cv" id="addEntryBtn">+ New entry</button>
             </div>
         </div>
-        ${sectionId === 'pubs' ? '<div id="pubsSyncPanel" class="admin-orcid-panel"></div><div id="scholarCheckPanel" class="admin-orcid-panel"></div>' : ''}
+        ${sectionId === 'pubs' ? '<div id="pubsSyncPanel" class="admin-orcid-panel"></div>' : ''}
         ${sectionId === 'confs' ? '<div id="coveragePanel" class="admin-orcid-panel"></div>' : ''}
         <div id="entryList" class="admin-entry-list"><p class="admin-muted">Loading…</p></div>`;
         $('addEntryBtn').addEventListener('click', () => openEntryForm(sectionId, null, null));
         if (sectionId === 'pubs') $('pubsSyncBtn').addEventListener('click', handlePublicationsSync);
-        if (sectionId === 'pubs') $('scholarCheckBtn').addEventListener('click', handleGoogleScholarCheck);
         if (sectionId === 'confs') $('coverageCheckBtn').addEventListener('click', handleConfsCoverageCheck);
 
         try {
