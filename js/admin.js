@@ -27,6 +27,12 @@
     // DOIs against the known ORCID/site publications, rather than searched at runtime.
     const SEMANTIC_SCHOLAR_AUTHOR_ID = '2075778349';
     const SEMANTIC_SCHOLAR_API_BASE = 'https://api.semanticscholar.org/graph/v1';
+    // Runs the Google Scholar check (via SerpApi, server-side — see
+    // .github/scripts/sync-publications.js) since a Scholar-scraping API key
+    // can't safely live in this browser-side code. The button below just
+    // triggers the existing scheduled workflow on demand and opens a PR;
+    // nothing publishes without review, same as every other sync source.
+    const SYNC_WORKFLOW_FILE = 'sync-publications.yml';
 
     // -----------------------------------------------------------------
     // Text helpers
@@ -143,6 +149,24 @@
                 throw new Error(errBody.message || `GitHub error (${res.status}).`);
             }
             return res.json();
+        },
+
+        // Triggers a workflow_dispatch run (returns no body on success). Needs the
+        // token to have "Actions: Read and write" in addition to Contents — if it
+        // doesn't, GitHub returns 404 here (not 403), since a token with no Actions
+        // access can't even see that the workflow exists.
+        async dispatchWorkflow(workflowFile) {
+            const res = await this.request(`/repos/${OWNER}/${REPO}/actions/workflows/${workflowFile}/dispatches`, {
+                method: 'POST',
+                body: JSON.stringify({ ref: BRANCH }),
+            });
+            if (!res.ok) {
+                if (res.status === 404) {
+                    throw new Error('Could not start the workflow (404). Your token likely needs "Actions: Read and write" permission added.');
+                }
+                const body = await res.json().catch(() => ({}));
+                throw new Error(body.message || `GitHub error (${res.status}).`);
+            }
         },
     };
 
@@ -1284,6 +1308,29 @@ ${lines}                        </div>
         }
     }
 
+    // Google Scholar itself can't be checked from here — a scraping API key can't
+    // safely live in this public, client-side code. Instead this starts the
+    // existing scheduled workflow (which runs server-side, with the key as a
+    // repo secret) and points to the Pull Requests tab — same "never publishes
+    // without review" guarantee as the inline sync above, just not instant.
+    async function handleGoogleScholarCheck() {
+        const btn = $('scholarCheckBtn');
+        const panel = $('scholarCheckPanel');
+        btn.disabled = true;
+        btn.textContent = 'Starting…';
+        panel.innerHTML = '';
+        try {
+            await Github.dispatchWorkflow(SYNC_WORKFLOW_FILE);
+            const prsUrl = `https://github.com/${OWNER}/${REPO}/pulls`;
+            panel.innerHTML = `<p class="admin-muted">Started. This checks ORCID, Semantic Scholar and Google Scholar together and takes about a minute — if it finds anything new, it opens a pull request for you to review: <a href="${escapeAttr(prsUrl)}" target="_blank">${escapeHtml(prsUrl)}</a></p>`;
+        } catch (err) {
+            panel.innerHTML = `<p class="admin-error">${escapeHtml(err.message)}</p>`;
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Check Google Scholar';
+        }
+    }
+
     async function handleConfsCoverageCheck() {
         const btn = $('coverageCheckBtn');
         const panel = $('coveragePanel');
@@ -1333,7 +1380,10 @@ ${lines}                        </div>
     async function renderSectionList(sectionId, preloadedContent) {
         const section = SECTIONS[sectionId];
         let extraBtn = '';
-        if (sectionId === 'pubs') extraBtn = '<button class="btn btn-outline-primary btn-cv" id="pubsSyncBtn">Sync publications</button>';
+        if (sectionId === 'pubs') {
+            extraBtn = '<button class="btn btn-outline-primary btn-cv" id="pubsSyncBtn">Sync publications</button>'
+                + '<button class="btn btn-outline-primary btn-cv" id="scholarCheckBtn">Check Google Scholar</button>';
+        }
         if (sectionId === 'confs') extraBtn = '<button class="btn btn-outline-primary btn-cv" id="coverageCheckBtn">Check publications without a conference entry</button>';
         els.content.innerHTML = `<div class="admin-section-header">
             <h2>${section.label}</h2>
@@ -1342,11 +1392,12 @@ ${lines}                        </div>
                 <button class="btn btn-primary btn-cv" id="addEntryBtn">+ New entry</button>
             </div>
         </div>
-        ${sectionId === 'pubs' ? '<div id="pubsSyncPanel" class="admin-orcid-panel"></div>' : ''}
+        ${sectionId === 'pubs' ? '<div id="pubsSyncPanel" class="admin-orcid-panel"></div><div id="scholarCheckPanel" class="admin-orcid-panel"></div>' : ''}
         ${sectionId === 'confs' ? '<div id="coveragePanel" class="admin-orcid-panel"></div>' : ''}
         <div id="entryList" class="admin-entry-list"><p class="admin-muted">Loading…</p></div>`;
         $('addEntryBtn').addEventListener('click', () => openEntryForm(sectionId, null, null));
         if (sectionId === 'pubs') $('pubsSyncBtn').addEventListener('click', handlePublicationsSync);
+        if (sectionId === 'pubs') $('scholarCheckBtn').addEventListener('click', handleGoogleScholarCheck);
         if (sectionId === 'confs') $('coverageCheckBtn').addEventListener('click', handleConfsCoverageCheck);
 
         try {

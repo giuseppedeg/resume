@@ -1,11 +1,13 @@
 name: Sync publications
 
-# Runs monthly (and on-demand via the "Run workflow" button) to check ORCID
-# and Semantic Scholar against the Publications section of index.html. If it
-# finds a publication that isn't on the site yet, or a site entry missing a
-# link that one of those sources has, it opens a pull request proposing the
-# change — it never pushes to main directly, so nothing publishes without
-# review. To change the schedule, edit the cron line below.
+# Runs monthly (and on-demand, either via the "Run workflow" button or the
+# admin tool's "Check Google Scholar" button) to check ORCID, Semantic
+# Scholar, and — if a SERPAPI_KEY secret is configured — Google Scholar
+# against the Publications section of index.html. If it finds a publication
+# that isn't on the site yet, or a site entry missing a link that one of
+# those sources has, it opens a pull request proposing the change — it never
+# pushes to main directly, so nothing publishes without review. To change
+# the schedule, edit the cron line below.
 on:
   schedule:
     - cron: '0 9 1 * *' # 09:00 UTC on the 1st of every month
@@ -32,6 +34,8 @@ jobs:
 
       - name: Run sync script
         id: sync
+        env:
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
         run: node .github/scripts/sync-publications.js
 
       - name: Open pull request with proposed changes
@@ -54,11 +58,11 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "$BRANCH"
           git add index.html
-          git commit -m "Sync publications from ORCID / Semantic Scholar"
+          git commit -m "Sync publications from external sources"
           git push --force origin "$BRANCH"
 
           gh pr create \
-            --title "Sync publications from ORCID / Semantic Scholar" \
+            --title "Sync publications from external sources" \
             --body "$SUMMARY" \
             --base main \
             --head "$BRANCH"

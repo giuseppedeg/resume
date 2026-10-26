@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 /*!
  * Scheduled publication sync (runs in GitHub Actions, see
- * .github/workflows/sync-publications.yml). Checks ORCID + Semantic
- * Scholar against the publications already in index.html and, if it
- * finds anything, writes the proposed changes straight into index.html
- * for a pull request to review — it never pushes to main directly.
+ * .github/workflows/sync-publications.yml). Checks ORCID, Semantic
+ * Scholar, and (if a SERPAPI_KEY secret is configured) Google Scholar
+ * against the publications already in index.html and, if it finds
+ * anything, writes the proposed changes straight into index.html for a
+ * pull request to review — it never pushes to main directly.
  *
  * This mirrors the matching/parsing/rendering logic behind the "Sync
- * publications" button in js/admin.js (same two sources, same
+ * publications" button in js/admin.js (same sources, same
  * DOI-then-title matching, same byte-precise splice-in-place engine),
  * reimplemented standalone here because this runs in Node/CI rather than
  * a browser. If you change the matching or rendering rules in one place,
@@ -25,6 +26,10 @@ const ORCID_API_BASE = 'https://pub.orcid.org/v3.0';
 // author profiles is actually this person — see js/admin.js for the full story.
 const SEMANTIC_SCHOLAR_AUTHOR_ID = '2075778349';
 const SEMANTIC_SCHOLAR_API_BASE = 'https://api.semanticscholar.org/graph/v1';
+// From the Google Scholar link in the About section (index.html) — kept in
+// sync with that link, not re-derived at runtime.
+const GOOGLE_SCHOLAR_AUTHOR_ID = 'S3TAjtwAAAAJ';
+const SERPAPI_BASE = 'https://serpapi.com/search.json';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const INDEX_PATH = path.join(REPO_ROOT, 'index.html');
@@ -268,6 +273,43 @@ async function fetchSemanticScholarWorks() {
     }).filter((w) => w.title);
 }
 
+// Google Scholar is noticeably more complete than ORCID/Semantic Scholar in
+// practice (confirmed by eye against the live profile), but SerpApi's author
+// listing gives neither a DOI nor a usable external link (its "link" field
+// just points back at a Google Scholar citation page) — so works found only
+// here will need the link filled in by hand during review, same as any
+// other source's missing-link case.
+function guessKickerFromPublication(pub) {
+    const text = (pub || '').toLowerCase();
+    if (/conference|proceedings|workshop|symposium/.test(text)) return 'Conference Proceedings';
+    if (/thesis/.test(text)) return 'Thesis';
+    return 'Publication';
+}
+
+async function fetchGoogleScholarWorks() {
+    const apiKey = process.env.SERPAPI_KEY;
+    if (!apiKey) throw Object.assign(new Error('skipped (no SERPAPI_KEY secret configured)'), { skipped: true });
+
+    const url = `${SERPAPI_BASE}?engine=google_scholar_author&author_id=${GOOGLE_SCHOLAR_AUTHOR_ID}&num=100&api_key=${apiKey}`;
+    let res;
+    try {
+        res = await fetch(url);
+    } catch (err) {
+        throw new Error('Could not reach SerpApi (network error).');
+    }
+    if (!res.ok) throw new Error(`SerpApi error (${res.status}).`);
+    const data = await res.json();
+    if (data.error) throw new Error(`SerpApi: ${data.error}`);
+    return (data.articles || []).map((a) => ({
+        doi: null,
+        link: '',
+        year: a.year || '',
+        title: cleanText(a.title || ''),
+        journal: a.publication || '',
+        kicker: guessKickerFromPublication(a.publication),
+    })).filter((w) => w.title);
+}
+
 function matchWorksAgainstSite(works, siteEntries) {
     const newOnes = [];
     const linkSuggestions = [];
@@ -295,7 +337,9 @@ async function main() {
 
     const sources = [];
     const failures = [];
-    const [orcidResult, s2Result] = await Promise.allSettled([fetchOrcidWorks(), fetchSemanticScholarWorks()]);
+    const [orcidResult, s2Result, scholarResult] = await Promise.allSettled([
+        fetchOrcidWorks(), fetchSemanticScholarWorks(), fetchGoogleScholarWorks(),
+    ]);
     if (orcidResult.status === 'fulfilled') {
         sources.push({ name: 'ORCID', ...matchWorksAgainstSite(orcidResult.value, siteEntries) });
     } else {
@@ -305,6 +349,11 @@ async function main() {
         sources.push({ name: 'Semantic Scholar', ...matchWorksAgainstSite(s2Result.value, siteEntries) });
     } else {
         failures.push(`Semantic Scholar: ${s2Result.reason.message}`);
+    }
+    if (scholarResult.status === 'fulfilled') {
+        sources.push({ name: 'Google Scholar', ...matchWorksAgainstSite(scholarResult.value, siteEntries) });
+    } else if (!scholarResult.reason.skipped) {
+        failures.push(`Google Scholar: ${scholarResult.reason.message}`);
     }
 
     const newOnes = [];
